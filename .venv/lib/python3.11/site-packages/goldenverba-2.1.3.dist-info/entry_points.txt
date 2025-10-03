@@ -1,0 +1,2 @@
+[console_scripts]
+verba = goldenverba.server.cli:cli
