@@ -2,3 +2,8 @@ term,definition,product_context,effective_date,version
 LT,Default manufacturing lead time in calendar days,All products,2024-01-15,1
 P1234,High-pressure valve assembly used in Model A lines,Hydraulics,2024-03-02,3
 MRB,Material Review Board process for non-conforming parts,Quality,2023-11-01,2
+TFT,Thin-film transistor array layer formed on glass substrate,Display panel,2024-05-20,1
+Cell Gap,Distance between TFT and CF substrates controlling electro-optical performance,Display panel,2024-07-05,1
+COG,Chip-on-glass packaging method for driver IC attachment,Module assembly,2024-04-18,2
+AOI,Automated optical inspection for pixel defects and mura detection,Quality,2024-02-12,1
+Yield Loss %,Percentage of panels rejected after module assembly step,Module assembly,2024-06-10,1
