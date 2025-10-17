@@ -1,15 +1,17 @@
-from fastapi import FastAPI, WebSocket, Request
+from fastapi import FastAPI, WebSocket, Request, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
 import asyncio
+import uuid
 
 from goldenverba.server.helpers import LoggerManager, BatchManager
 from weaviate.client import WeaviateAsyncClient
 
 import os
 from pathlib import Path
+from datetime import datetime
 
 from dotenv import load_dotenv
 from starlette.websockets import WebSocketDisconnect
@@ -17,12 +19,26 @@ from wasabi import msg  # type: ignore[import]
 
 from goldenverba import verba_manager
 
+from goldenverba.server.db import (
+    DatabaseError,
+    database,
+    part_number_feature_enabled,
+)
+from goldenverba.server.part_numbers import (
+    PartNumberConflictError,
+    PartNumberNotFoundError,
+    PartNumberService,
+    PartNumberValidationError,
+)
+from goldenverba.server.rules import RuleValidationError, load_rules
+
 from goldenverba.server.types import (
     ResetPayload,
     QueryPayload,
     GeneratePayload,
     Credentials,
     GetDocumentPayload,
+    UpdateDocumentLabelsPayload,
     ConnectPayload,
     DatacountPayload,
     GetSuggestionsPayload,
@@ -37,6 +53,10 @@ from goldenverba.server.types import (
     GetVectorPayload,
     DataBatchPayload,
     ChunksPayload,
+    GeneratePartReq,
+    GeneratePartResp,
+    PartDetailResp,
+    ErrorResp,
 )
 
 load_dotenv()
@@ -56,13 +76,73 @@ manager = verba_manager.VerbaManager()
 
 client_manager = verba_manager.ClientManager()
 
+FEATURE_PART_NUMBER = part_number_feature_enabled()
+part_service: PartNumberService | None = None
+part_numbers_ready = False
+rules_error_message: str | None = None
+DEFAULT_PART_NUMBER_USER = os.getenv("PART_NUMBER_DEFAULT_USER", "dev-user")
+
+
+if FEATURE_PART_NUMBER:
+    try:
+        loaded_rules = load_rules()
+        part_service = PartNumberService(database, loaded_rules)
+    except RuleValidationError as exc:
+        rules_error_message = str(exc)
+        msg.fail(f"Failed to initialize part rules: {exc}")
+
 ### Lifespan
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
-    await client_manager.disconnect()
+    global part_numbers_ready
+    if FEATURE_PART_NUMBER and part_service is not None:
+        try:
+            await database.connect()
+            part_numbers_ready = True
+        except DatabaseError as exc:
+            part_numbers_ready = False
+            msg.fail(f"Failed to connect part database: {exc}")
+    try:
+        yield
+    finally:
+        await client_manager.disconnect()
+        if part_numbers_ready:
+            await database.disconnect()
+            part_numbers_ready = False
+
+
+
+
+def _get_current_user_id(request: Request) -> str:
+    claims = getattr(request.state, "jwt_claims", None) or {}
+    for key in ("sub", "user_id", "username", "email"):
+        value = claims.get(key)
+        if value:
+            return str(value)
+    return DEFAULT_PART_NUMBER_USER
+
+
+
+
+def _part_feature_status():
+    if not FEATURE_PART_NUMBER:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Part number feature disabled"},
+        )
+    if part_service is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Part number rules unavailable", "details": rules_error_message},
+        )
+    if not part_numbers_ready:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Part number storage unavailable"},
+        )
+    return None
 
 
 # FastAPI App
@@ -660,6 +740,25 @@ async def get_all_documents(payload: SearchQueryPayload):
         )
 
 
+@app.post("/api/update_document_labels")
+async def update_document_labels(payload: UpdateDocumentLabelsPayload):
+    try:
+        client = await client_manager.connect(payload.credentials)
+        labels = await manager.weaviate_manager.update_document_labels(
+            client, payload.uuid, payload.labels
+        )
+        return JSONResponse(content={"labels": labels, "error": ""})
+    except Exception as e:
+        msg.fail(f"Updating document labels failed: {str(e)}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "labels": [],
+                "error": f"Updating document labels failed: {str(e)}",
+            },
+        )
+
+
 # Delete specific document based on UUID
 @app.post("/api/delete_document")
 async def delete_document(payload: GetDocumentPayload):
@@ -794,3 +893,110 @@ async def delete_suggestion(payload: DeleteSuggestionPayload):
                 "status": 400,
             }
         )
+
+
+@app.post(
+    "/api/parts/generate",
+    response_model=GeneratePartResp,
+    responses={
+        400: {"model": ErrorResp},
+        409: {"model": ErrorResp},
+        503: {"model": ErrorResp},
+    },
+)
+async def generate_part_number(
+    payload: GeneratePartReq,
+    request: Request,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, convert_underscores=False),
+):
+    status_check = _part_feature_status()
+    if status_check is not None:
+        return status_check
+
+    if part_service is None:
+        raise HTTPException(status_code=503, detail="Part number service unavailable")
+
+    key = idempotency_key or str(uuid.uuid4())
+    user_id = _get_current_user_id(request)
+
+    try:
+        generated = await part_service.generate_part(
+            series=payload.series,
+            revision=payload.revision,
+            detail_prefix=payload.detail_prefix,
+            note=payload.note,
+            created_by=user_id,
+            idempotency_key=key,
+        )
+    except PartNumberValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PartNumberConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        msg.fail(f"Failed to generate part number: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to generate part number") from exc
+
+    response.headers["Idempotency-Key"] = generated.idempotency_key or key
+
+    return GeneratePartResp(
+        part_no=generated.part_no,
+        series=generated.series,
+        serial=generated.serial,
+        revision=generated.revision,
+        owner=generated.owner,
+        series_name=generated.series_name,
+        rule_version=generated.rule_version,
+        idempotency_key=generated.idempotency_key or key,
+        created_by=generated.created_by,
+        created_at=generated.created_at,
+        note=generated.note,
+        detail_code=generated.detail_code,
+        detail_prefix=generated.detail_prefix,
+        detail_suffix=generated.detail_suffix,
+    )
+
+
+@app.get(
+    "/api/parts/{part_no}",
+    response_model=PartDetailResp,
+    responses={
+        400: {"model": ErrorResp},
+        404: {"model": ErrorResp},
+        503: {"model": ErrorResp},
+    },
+)
+async def get_part_number(part_no: str):
+    status_check = _part_feature_status()
+    if status_check is not None:
+        return status_check
+
+    if part_service is None:
+        raise HTTPException(status_code=503, detail="Part number service unavailable")
+
+    try:
+        generated = await part_service.get_part(part_no)
+    except PartNumberValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PartNumberNotFoundError:
+        raise HTTPException(status_code=404, detail="Part number not found")
+    except Exception as exc:
+        msg.fail(f"Failed to read part number: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to load part number") from exc
+
+    return PartDetailResp(
+        part_no=generated.part_no,
+        series=generated.series,
+        serial=generated.serial,
+        revision=generated.revision,
+        owner=generated.owner,
+        series_name=generated.series_name,
+        rule_version=generated.rule_version,
+        idempotency_key=generated.idempotency_key,
+        created_by=generated.created_by,
+        created_at=generated.created_at,
+        note=generated.note,
+        detail_code=generated.detail_code,
+        detail_prefix=generated.detail_prefix,
+        detail_suffix=generated.detail_suffix,
+    )

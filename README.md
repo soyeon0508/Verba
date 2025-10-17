@@ -46,6 +46,48 @@ Verba is a fully-customizable personal assistant utilizing [Retrieval Augmented 
 
 [![VIDEO LINK](https://github.com/weaviate/Verba/blob/main/img/thumbnail.png)](https://www.youtube.com/watch?v=2VCy-YjRRhA&t=40s&ab_channel=Weaviate%E2%80%A2VectorDatabase)
 
+## IDS Part Number Generator
+
+- Enable with `FEATURE_PART_NUMBER` (defaults to `true`).
+- Configure storage via `PART_DATABASE_URL`; SQLite at `data/parts.db` is used if unset.
+- Migrations in `migrations/` run automatically at startup.
+- Rules are defined in `config/rules.yml`; update the file (series, seeds, revision pads) and restart to apply.
+- The server derives `created_by` from the authenticated request (falls back to `dev-user` in local dev).
+
+### Quickstart
+
+```bash
+export PART_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/partdb
+export FEATURE_PART_NUMBER=true
+uvicorn goldenverba.server.api:app --reload
+```
+
+### Sample Requests
+
+```bash
+curl -s http://localhost:8000/api/parts/generate   -H 'Content-Type: application/json'   -H 'Idempotency-Key: demo-730-1'   -d '{"series":"730","note":"bonding"}'
+```
+
+```bash
+curl -s http://localhost:8000/api/parts/generate   -H 'Content-Type: application/json'   -H 'Idempotency-Key: demo-730-1'   -d '{"series":"730"}'  # returns the same part number as above
+```
+
+```bash
+curl -s http://localhost:8000/api/parts/generate   -H 'Content-Type: application/json'   -H 'Idempotency-Key: demo-730-2'   -d '{"series":"730"}'  # next serial for the same series
+```
+
+```bash
+curl -s http://localhost:8000/api/parts/730-00001-00
+```
+
+### Error Codes
+
+| Status | Meaning |
+| ------ | ------- |
+| 400 | Unknown series, rule validation failure, or bad format |
+| 404 | Part number not found |
+| 409 | Idempotency/insert conflict (retry safe) |
+| 503 | Feature disabled or storage unavailable |
 ## Feature Lists
 
 | 🤖 Model Support                  | Implemented | Description                                             |

@@ -47,6 +47,9 @@ setup(
         "assemblyai==0.33.0",
         "beautifulsoup4==4.12.3",
         "langdetect==1.0.9",
+        "asyncpg==0.29.0",
+        "aiosqlite==0.20.0",
+        "PyYAML==6.0.2",
     ],
     extras_require={
         "dev": ["pytest", "wheel", "twine", "black>=23.7.0", "setuptools"],

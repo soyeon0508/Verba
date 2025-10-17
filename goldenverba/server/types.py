@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from enum import Enum
 
 
@@ -254,6 +254,46 @@ class GetDocumentPayload(BaseModel):
     credentials: Credentials
 
 
+class UpdateDocumentLabelsPayload(BaseModel):
+    uuid: str
+    labels: list[str]
+    credentials: Credentials
+
+
 class ResetPayload(BaseModel):
     resetMode: str
     credentials: Credentials
+
+
+
+
+class GeneratePartReq(BaseModel):
+    series: str = Field(..., pattern=r"^\d{3}$")
+    revision: str | None = Field(None, pattern=r"^\d{2}$")
+    detail_prefix: str | None = Field(None, pattern=r"^\d{1,5}$")
+    note: str | None = None
+
+
+class GeneratePartResp(BaseModel):
+    part_no: str
+    series: str
+    serial: int
+    detail_code: str
+    detail_prefix: str | None = None
+    detail_suffix: str
+    revision: str
+    owner: str | None = None
+    series_name: str | None = None
+    rule_version: str | None = None
+    idempotency_key: str | None = None
+    created_by: str
+    created_at: str
+    note: str | None = None
+
+
+class PartDetailResp(GeneratePartResp):
+    pass
+
+
+class ErrorResp(BaseModel):
+    detail: str

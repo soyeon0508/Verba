@@ -1,0 +1,80 @@
+format:
+  pattern: '^\\d{3}-\\d{5}-\\d{2}$'
+  serial_pad: 5
+  revision_pad: 2
+  revision_default: '00'
+
+counters:
+  scope: 'per_series'
+
+series:
+  "200":
+    name: "Production Material"
+    owner: "Purchasing"
+    start_serial: 5001
+  "300":
+    name: "LCD/STN panels"
+    owner: "Purchasing"
+    start_serial: 5001
+  "500":
+    name: "Touch/Controllers/PCB/Drivers/Brackets"
+    owner: "Purchasing"
+    start_serial: 5001
+  "600":
+    name: "Film/Glass"
+    owner: "Purchasing"
+    start_serial: 5001
+  "720":
+    name: "Kit"
+    owner: "Engineering/ADT"
+    start_serial: 1
+  "725":
+    name: "Assembly"
+    owner: "Engineering/ADT"
+    start_serial: 1
+  "730":
+    name: "Bonding"
+    owner: "Engineering/ADT"
+    start_serial: 1
+    detail_prefix:
+      length: 2
+      required: true
+      label: "Size code (2 digits)"
+      hint: "Enter two digits (e.g., 05)."
+  "735":
+    name: "Film LCD"
+    owner: "Engineering/ADT"
+    start_serial: 1
+  "740":
+    name: "Touch (with tape)"
+    owner: "Engineering/ADT"
+    start_serial: 1
+    detail_prefix:
+      length: 2
+      required: true
+      label: "Size code (2 digits)"
+      hint: "Enter two digits (e.g., 05)."
+  "745":
+    name: "Film Glass"
+    owner: "Engineering/ADT"
+    start_serial: 1
+  "750":
+    name: "Other"
+    owner: "Engineering/ADT"
+    start_serial: 1
+  "800":
+    name: "CSM (Customer Supplied Material)"
+    owner: "Engineering/ADT"
+    start_serial: 1
+  "975":
+    name: "Engineering Sample"
+    owner: "Engineering/ADT"
+    start_serial: 1
+
+constraints:
+  reserved_serial_ranges: []
+  blocklist_series: []
+
+meta:
+  version: 'v1-ids-2025-10-15'
+  notes: '200–600은 5001부터, 700/800/975는 1부터.'
