@@ -1,18 +1,15 @@
-from fastapi import FastAPI, WebSocket, Request, Header, HTTPException, Response
+from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
 import asyncio
-import uuid
 
 from goldenverba.server.helpers import LoggerManager, BatchManager
 from weaviate.client import WeaviateAsyncClient
 
 import os
 from pathlib import Path
-from datetime import datetime
-
 from dotenv import load_dotenv
 from starlette.websockets import WebSocketDisconnect
 from wasabi import msg  # type: ignore[import]
@@ -30,7 +27,7 @@ from goldenverba.server.part_numbers import (
     PartNumberService,
     PartNumberValidationError,
 )
-from goldenverba.server.rules import RuleValidationError, load_rules
+from goldenverba.server.rules import RulesError, RulesResolver
 
 from goldenverba.server.types import (
     ResetPayload,
@@ -55,8 +52,6 @@ from goldenverba.server.types import (
     ChunksPayload,
     GeneratePartReq,
     GeneratePartResp,
-    PartDetailResp,
-    ErrorResp,
 )
 
 load_dotenv()
@@ -80,14 +75,28 @@ FEATURE_PART_NUMBER = part_number_feature_enabled()
 part_service: PartNumberService | None = None
 part_numbers_ready = False
 rules_error_message: str | None = None
-DEFAULT_PART_NUMBER_USER = os.getenv("PART_NUMBER_DEFAULT_USER", "dev-user")
 
+DEFAULT_ALLOWED_ORIGINS = {
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "http://127.0.0.1:5173",
+}
+ENV_ALLOWED = {
+    origin.strip().rstrip("/")
+    for origin in os.getenv("VERBA_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+}
+ALLOWED_ORIGINS = DEFAULT_ALLOWED_ORIGINS | ENV_ALLOWED
 
 if FEATURE_PART_NUMBER:
     try:
-        loaded_rules = load_rules()
-        part_service = PartNumberService(database, loaded_rules)
-    except RuleValidationError as exc:
+        resolver = RulesResolver()
+        part_service = PartNumberService(database, resolver.resolve())
+
+    except RulesError as exc:
         rules_error_message = str(exc)
         msg.fail(f"Failed to initialize part rules: {exc}")
 
@@ -112,16 +121,6 @@ async def lifespan(app: FastAPI):
             await database.disconnect()
             part_numbers_ready = False
 
-
-
-
-def _get_current_user_id(request: Request) -> str:
-    claims = getattr(request.state, "jwt_claims", None) or {}
-    for key in ("sub", "user_id", "username", "email"):
-        value = claims.get(key)
-        if value:
-            return str(value)
-    return DEFAULT_PART_NUMBER_USER
 
 
 
@@ -166,10 +165,17 @@ async def check_same_origin(request: Request, call_next):
         return await call_next(request)
 
     origin = request.headers.get("origin")
-    if origin == str(request.base_url).rstrip("/") or (
-        origin
-        and origin.startswith("http://localhost:")
-        and request.base_url.hostname == "localhost"
+    normalized_origin = origin.rstrip("/") if origin else None
+    expected_origin = str(request.base_url).rstrip("/")
+
+    if (
+        normalized_origin is None
+        or normalized_origin == expected_origin
+        or normalized_origin in ALLOWED_ORIGINS
+        or (
+            normalized_origin.startswith("http://localhost:")
+            and request.base_url.hostname in {"localhost", "127.0.0.1"}
+        )
     ):
         return await call_next(request)
     else:
@@ -895,108 +901,102 @@ async def delete_suggestion(payload: DeleteSuggestionPayload):
         )
 
 
-@app.post(
-    "/api/parts/generate",
-    response_model=GeneratePartResp,
-    responses={
-        400: {"model": ErrorResp},
-        409: {"model": ErrorResp},
-        503: {"model": ErrorResp},
-    },
-)
-async def generate_part_number(
-    payload: GeneratePartReq,
-    request: Request,
-    response: Response,
-    idempotency_key: str | None = Header(default=None, convert_underscores=False),
-):
+PART_NUMBER_DEFAULT_USER = os.getenv("PART_NUMBER_DEFAULT_USER", "api")
+
+
+@app.post("/api/parts/generate")
+async def generate_part_number(request: Request, payload: GeneratePartReq):
     status_check = _part_feature_status()
     if status_check is not None:
         return status_check
 
     if part_service is None:
-        raise HTTPException(status_code=503, detail="Part number service unavailable")
+        return JSONResponse(status_code=503, content={"error": "Part number service unavailable"})
 
-    key = idempotency_key or str(uuid.uuid4())
-    user_id = _get_current_user_id(request)
+    idempotency_key = request.headers.get("Idempotency-Key")
+    created_by = (payload.created_by or PART_NUMBER_DEFAULT_USER).strip() or PART_NUMBER_DEFAULT_USER
 
     try:
-        generated = await part_service.generate_part(
+        result = await part_service.generate_part(
             series=payload.series,
+            created_by=created_by,
             revision=payload.revision,
             detail_prefix=payload.detail_prefix,
             note=payload.note,
-            created_by=user_id,
-            idempotency_key=key,
+            idempotency_key=idempotency_key,
+            description=payload.description,
+            customer_id=payload.customer_id,
+            attrs=payload.attrs,
+            vendor_id=payload.vendor_id,
+            drawing=payload.drawing,
+            base_key=payload.base_key,
+            rma_no=payload.rma_no,
         )
+        response = GeneratePartResp(
+            part_no=result.part_no,
+            series=result.series,
+            serial=result.serial,
+            detail_code=result.detail_code,
+            detail_prefix=result.detail_prefix,
+            detail_suffix=result.detail_suffix,
+            revision=result.revision,
+            owner=result.owner,
+            series_name=result.series_name,
+            rule_version=result.rule_version,
+            idempotency_key=result.idempotency_key,
+            created_by=result.created_by,
+            created_at=result.created_at,
+            note=result.note,
+            base_key=result.base_key,
+            customer_id=result.customer_id,
+            attrs=result.attrs,
+        )
+        return JSONResponse(content=response.model_dump())
     except PartNumberValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(status_code=400, content={"error": str(exc)})
     except PartNumberConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(status_code=409, content={"error": str(exc)})
     except Exception as exc:
         msg.fail(f"Failed to generate part number: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to generate part number") from exc
-
-    response.headers["Idempotency-Key"] = generated.idempotency_key or key
-
-    return GeneratePartResp(
-        part_no=generated.part_no,
-        series=generated.series,
-        serial=generated.serial,
-        revision=generated.revision,
-        owner=generated.owner,
-        series_name=generated.series_name,
-        rule_version=generated.rule_version,
-        idempotency_key=generated.idempotency_key or key,
-        created_by=generated.created_by,
-        created_at=generated.created_at,
-        note=generated.note,
-        detail_code=generated.detail_code,
-        detail_prefix=generated.detail_prefix,
-        detail_suffix=generated.detail_suffix,
-    )
+        return JSONResponse(status_code=500, content={"error": "Failed to generate part number"})
 
 
-@app.get(
-    "/api/parts/{part_no}",
-    response_model=PartDetailResp,
-    responses={
-        400: {"model": ErrorResp},
-        404: {"model": ErrorResp},
-        503: {"model": ErrorResp},
-    },
-)
+@app.get("/api/parts/{part_no}")
 async def get_part_number(part_no: str):
     status_check = _part_feature_status()
     if status_check is not None:
         return status_check
 
     if part_service is None:
-        raise HTTPException(status_code=503, detail="Part number service unavailable")
+        return JSONResponse(status_code=503, content={"error": "Part number service unavailable"})
 
     try:
-        generated = await part_service.get_part(part_no)
+        result = await part_service.get_part(part_no)
     except PartNumberValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PartNumberNotFoundError:
-        raise HTTPException(status_code=404, detail="Part number not found")
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except PartNumberNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
     except Exception as exc:
         msg.fail(f"Failed to read part number: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to load part number") from exc
+        return JSONResponse(status_code=500, content={"error": "Failed to load part number"})
 
-    return PartDetailResp(
-        part_no=generated.part_no,
-        series=generated.series,
-        serial=generated.serial,
-        revision=generated.revision,
-        owner=generated.owner,
-        series_name=generated.series_name,
-        rule_version=generated.rule_version,
-        idempotency_key=generated.idempotency_key,
-        created_by=generated.created_by,
-        created_at=generated.created_at,
-        note=generated.note,
-        detail_code=generated.detail_code,
-        detail_prefix=generated.detail_prefix,
-        detail_suffix=generated.detail_suffix,
+    response = GeneratePartResp(
+        part_no=result.part_no,
+        series=result.series,
+        serial=result.serial,
+        detail_code=result.detail_code,
+        detail_prefix=result.detail_prefix,
+        detail_suffix=result.detail_suffix,
+        revision=result.revision,
+        owner=result.owner,
+        series_name=result.series_name,
+        rule_version=result.rule_version,
+        idempotency_key=result.idempotency_key,
+        created_by=result.created_by,
+        created_at=result.created_at,
+        note=result.note,
+        base_key=result.base_key,
+        customer_id=result.customer_id,
+        attrs=result.attrs,
     )
+    return JSONResponse(content=response.model_dump())

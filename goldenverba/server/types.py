@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -270,8 +270,16 @@ class ResetPayload(BaseModel):
 class GeneratePartReq(BaseModel):
     series: str = Field(..., pattern=r"^\d{3}$")
     revision: str | None = Field(None, pattern=r"^\d{2}$")
-    detail_prefix: str | None = Field(None, pattern=r"^\d{1,5}$")
+    detail_prefix: str | None = Field(None, pattern=r"^\d{1,4}$")
     note: str | None = None
+    created_by: str | None = None
+    description: str | None = None
+    customer_id: str | None = None
+    attrs: dict[str, Any] | None = None
+    vendor_id: int | None = None
+    drawing: str | None = None
+    base_key: str | None = None
+    rma_no: str | None = None
 
 
 class GeneratePartResp(BaseModel):
@@ -289,6 +297,9 @@ class GeneratePartResp(BaseModel):
     created_by: str
     created_at: str
     note: str | None = None
+    base_key: str | None = None
+    customer_id: str | None = None
+    attrs: dict[str, Any] = Field(default_factory=dict)
 
 
 class PartDetailResp(GeneratePartResp):

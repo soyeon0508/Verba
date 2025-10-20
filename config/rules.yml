@@ -1,6 +1,6 @@
 format:
-  pattern: '^\\d{3}-\\d{5}-\\d{2}$'
-  serial_pad: 5
+  pattern: '^\\d{3}-\\d{4}-\\d{2}$'
+  serial_pad: 4
   revision_pad: 2
   revision_default: '00'
 

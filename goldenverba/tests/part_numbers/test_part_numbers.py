@@ -23,18 +23,38 @@ async def part_service():
 
 @pytest.mark.asyncio
 async def test_generate_sequence(part_service: PartNumberService):
-    first = await part_service.generate_part(series="730", created_by="tester", idempotency_key="seq-1")
-    second = await part_service.generate_part(series="730", created_by="tester", idempotency_key="seq-2")
+    first = await part_service.generate_part(
+        series="730",
+        detail_prefix="05",
+        created_by="tester",
+        idempotency_key="seq-1",
+    )
+    second = await part_service.generate_part(
+        series="730",
+        detail_prefix="05",
+        created_by="tester",
+        idempotency_key="seq-2",
+    )
 
-    assert first.part_no == "730-00001-00"
-    assert second.part_no == "730-00002-00"
+    assert first.part_no == "730-0501-00"
+    assert second.part_no == "730-0502-00"
 
 
 @pytest.mark.asyncio
 async def test_idempotent_reuse(part_service: PartNumberService):
     key = "idem-730"
-    first = await part_service.generate_part(series="730", created_by="tester", idempotency_key=key)
-    retry = await part_service.generate_part(series="730", created_by="tester", idempotency_key=key)
+    first = await part_service.generate_part(
+        series="730",
+        detail_prefix="07",
+        created_by="tester",
+        idempotency_key=key,
+    )
+    retry = await part_service.generate_part(
+        series="730",
+        detail_prefix="07",
+        created_by="tester",
+        idempotency_key=key,
+    )
 
     assert retry.part_no == first.part_no
     assert retry.serial == first.serial
@@ -43,10 +63,15 @@ async def test_idempotent_reuse(part_service: PartNumberService):
 @pytest.mark.asyncio
 async def test_series_seed_values(part_service: PartNumberService):
     mat = await part_service.generate_part(series="200", created_by="tester", idempotency_key="seed-200")
-    bond = await part_service.generate_part(series="730", created_by="tester", idempotency_key="seed-730")
+    bond = await part_service.generate_part(
+        series="730",
+        detail_prefix="06",
+        created_by="tester",
+        idempotency_key="seed-730",
+    )
 
     assert mat.serial == 5001
-    assert bond.serial == 1
+    assert bond.serial == 601
 
 
 @pytest.mark.asyncio
@@ -87,12 +112,12 @@ async def test_get_part_roundtrip(part_service: PartNumberService):
     generated = await part_service.generate_part(series="735", created_by="tester", idempotency_key="get-1")
     record = await part_service.get_part(generated.part_no)
 
-    assert record["part_no"] == generated.part_no
-    assert int(record["serial"]) == generated.serial
-    assert record["revision"] == generated.revision
+    assert record.part_no == generated.part_no
+    assert record.serial == generated.serial
+    assert record.revision == generated.revision
 
 
 @pytest.mark.asyncio
 async def test_get_part_missing(part_service: PartNumberService):
     with pytest.raises(PartNumberNotFoundError):
-        await part_service.get_part("730-99999-00")
+        await part_service.get_part("730-9999-00")

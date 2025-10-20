@@ -198,3 +198,23 @@ def pad_serial(rules: RuleSet, serial: int) -> str:
 
 def rule_version(rules: RuleSet) -> str:
     return rules.version_hash
+
+
+class RulesResolver:
+    """Load and cache the part-number rule set."""
+
+    def __init__(self, path: Path | None = None):
+        self._path = path
+        self._rules = load_rules(path)
+
+    def resolve(self) -> RuleSet:
+        """Return the cached rules."""
+        return self._rules
+
+    def reload(self) -> RuleSet:
+        """Reload rules from disk."""
+        self._rules = load_rules(self._path)
+        return self._rules
+
+    def __call__(self) -> RuleSet:
+        return self.resolve()

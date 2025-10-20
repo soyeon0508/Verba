@@ -148,13 +148,22 @@ class Database:
 
         return Path(path_str or self._default_sqlite_path)
 
-    async def _apply_migrations(self) -> None:
+    def _iter_migration_files(self) -> Iterable[Path]:
         if not self.migrations_path.exists():
-            return
+            return []
 
-        migration_files: Iterable[Path] = sorted(
-            self.migrations_path.glob("*.sql"), key=lambda item: item.name
-        )
+        dialect_path = self.migrations_path / self.dialect
+        if dialect_path.exists():
+            candidates = dialect_path.glob("*.sql")
+        else:
+            candidates = self.migrations_path.glob("*.sql")
+
+        return sorted(candidates, key=lambda item: item.name)
+
+    async def _apply_migrations(self) -> None:
+        migration_files = self._iter_migration_files()
+        if not migration_files:
+            return
 
         if self.dialect == "postgres":
             if self._pool is None:
